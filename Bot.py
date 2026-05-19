@@ -69,7 +69,6 @@ def get_main_keyboard():
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     chat_id = message.chat.id
-    user_id = message.from_user.id
     
     # Deep linking - Foydalanuvchi "Testni boshlash" tugmasini bosib kelganda
     if "start_quiz_" in message.text:
@@ -78,7 +77,6 @@ def send_welcome(message):
         if quiz_pack_id in quizzes_db:
             pack = quizzes_db[quiz_pack_id]
             
-            # Agar eski taymer bo'lsa to'xtatamiz
             if chat_id in active_sessions:
                 if active_sessions[chat_id]['timer']:
                     active_sessions[chat_id]['timer'].cancel()
@@ -96,7 +94,6 @@ def send_welcome(message):
             bot.send_message(chat_id, "❌ Afsuski, bu test topilmadi yoki o'chib ketgan.", reply_markup=get_main_keyboard())
         return
 
-    # Oddiy start bosilganda pastki menyuni majburan ko'rsatamiz
     bot.send_message(chat_id, 
                      "📌 **Quiz Pack Maker Botiga xush kelibsiz!**\n\n"
                      "Menga Word faylingizni yuboring yoki quyidagi menyudan foydalaning:", 
@@ -199,14 +196,14 @@ def handle_docs(message):
         file_info = bot.get_file(message.document.file_id)
         downloaded_file = bot.download_file(file_info.file_path)
         
-        # State (holat) o'rnatiladi
         user_states[user_id] = {
             'state': 'AWAITING_QUIZ_TITLE',
             'file_data': downloaded_file,
             'file_name': message.document.file_name
         }
         
-        bot.reply_to(message, "📥 Fayl qabul qilindi!\n\n✍️ **Endi ushbu test uchun ixtiyoriy nom (sarlavha) kiriting:**", reply_markup=get_main_keyboard())
+        # Bu yerda foydalanuvchiga pastki menyu buzilmagan holda sarlavha kiritish xabari boradi
+        bot.send_message(message.chat.id, "📥 Fayl qabul qilindi!\n\n✍️ **Endi ushbu test uchun ixtiyoriy nom (sarlavha) kiriting:**", reply_markup=get_main_keyboard())
         
     except Exception as e:
         bot.reply_to(message, f"❌ Faylni yuklashda xatolik: {str(e)}", reply_markup=get_main_keyboard())
@@ -247,10 +244,11 @@ def handle_quiz_title(message):
         start_url = f"https://t.me/{bot_username}?start=start_quiz_{pack_id}"
         share_url = f"https://t.me/share/url?url=https://t.me/{bot_username}?start=start_quiz_{pack_id}&text=Ushbu testni yechib ko'ring! 🎯"
 
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("🚀 Testni boshlash", url=start_url))
-        markup.add(types.InlineKeyboardButton("👥 Guruhda boshlash", url=f"https://t.me/{bot_username}?startgroup=start_quiz_{pack_id}"))
-        markup.add(types.InlineKeyboardButton("📩 Ulashish", url=share_url))
+        # TUGATISH: Mana shu yerda inline tugmalarni mukammal jamlaymiz!
+        inline_markup = types.InlineKeyboardMarkup()
+        inline_markup.add(types.InlineKeyboardButton("🚀 Testni boshlash", url=start_url))
+        inline_markup.add(types.InlineKeyboardButton("👥 Guruhda boshlash", url=f"https://t.me/{bot_username}?startgroup=start_quiz_{pack_id}"))
+        inline_markup.add(types.InlineKeyboardButton("📩 Ulashish", url=share_url))
         
         response_text = (
             f"🚀 **{quiz_title}**\n\n"
@@ -260,7 +258,9 @@ def handle_quiz_title(message):
             f"⏱ Vaqt: 30 sec"
         )
         
-        bot.send_message(chat_id, response_text, reply_markup=get_main_keyboard(), parse_mode="Markdown")
+        # Bu yerda reply_markup o'rniga inline_markup berildi, ya'ni xabar tagidagi tugmalar qaytdi!
+        # Pastki reply menyu esa one_time bo'lmagani uchun o'z-o'zidan joyida qolaveradi.
+        bot.send_message(chat_id, response_text, reply_markup=inline_markup, parse_mode="Markdown")
         user_states.pop(user_id, None)
         
     except Exception as e:
@@ -268,5 +268,5 @@ def handle_quiz_title(message):
         user_states.pop(user_id, None)
 
 if __name__ == "__main__":
-    print("Menyuli mukammal Quiz bot ishlamoqda...")
+    print("Xatoliklari to'g'rilangan yakuniy bot ishlamoqda...")
     bot.infinity_polling()
