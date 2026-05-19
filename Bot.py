@@ -59,8 +59,8 @@ def parse_quiz_text(text):
     return quizzes
 
 def get_main_keyboard():
-    """Asosiy pastki menyu tugmalari"""
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    """Doimiy pastki bosh menyu tugmalari"""
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=False)
     btn_upload = types.KeyboardButton("📂 Word yuklash")
     btn_my_quizzes = types.KeyboardButton("📚 Mening testlarim")
     markup.add(btn_upload, btn_my_quizzes)
@@ -68,13 +68,20 @@ def get_main_keyboard():
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    
     # Deep linking - Foydalanuvchi "Testni boshlash" tugmasini bosib kelganda
     if "start_quiz_" in message.text:
         quiz_pack_id = message.text.split("start_quiz_")[1]
-        chat_id = message.chat.id
         
         if quiz_pack_id in quizzes_db:
             pack = quizzes_db[quiz_pack_id]
+            
+            # Agar eski taymer bo'lsa to'xtatamiz
+            if chat_id in active_sessions:
+                if active_sessions[chat_id]['timer']:
+                    active_sessions[chat_id]['timer'].cancel()
             
             active_sessions[chat_id] = {
                 'pack_id': quiz_pack_id,
@@ -83,32 +90,32 @@ def send_welcome(message):
                 'is_active': True
             }
             
-            bot.send_message(chat_id, f"🚀 **{pack['title']}** testi boshlandi!\nJami savollar soni: {len(pack['questions'])}")
+            bot.send_message(chat_id, f"🚀 **{pack['title']}** testi boshlandi!\nJami savollar soni: {len(pack['questions'])}", reply_markup=get_main_keyboard())
             send_quiz_question(chat_id, 0)
         else:
-            bot.send_message(chat_id, "❌ Afsuski, bu test topilmadi yoki o'chib ketgan.")
+            bot.send_message(chat_id, "❌ Afsuski, bu test topilmadi yoki o'chib ketgan.", reply_markup=get_main_keyboard())
         return
 
-    bot.send_message(message.chat.id, 
+    # Oddiy start bosilganda pastki menyuni majburan ko'rsatamiz
+    bot.send_message(chat_id, 
                      "📌 **Quiz Pack Maker Botiga xush kelibsiz!**\n\n"
-                     "Quyidagi menyudan foydalaning:", 
+                     "Menga Word faylingizni yuboring yoki quyidagi menyudan foydalaning:", 
                      reply_markup=get_main_keyboard())
 
 @bot.message_handler(func=lambda message: message.text == "📂 Word yuklash")
 def ask_for_file(message):
-    bot.send_message(message.chat.id, "📑 Iltimos, menga `?`, `+`, `=` formatida terilgan Word (.docx) faylini yuboring.")
+    bot.send_message(message.chat.id, "📑 Iltimos, menga `?`, `+`, `=` formatida terilgan Word (.docx) faylini yuboring.", reply_markup=get_main_keyboard())
 
 @bot.message_handler(func=lambda message: message.text == "📚 Mening testlarim")
 def show_my_quizzes(message):
     user_id = message.from_user.id
-    # Foydalanuvchi yaratgan testlarni filtrlab olamiz
     my_quizzes = [pid for pid, pdata in quizzes_db.items() if pdata['creator_id'] == user_id]
     
     if not my_quizzes:
-        bot.send_message(message.chat.id, "ℹ️ Sizda hali tuzilgan testlar yo'q. Word fayl yuborib birinchi testingizni yarating!")
+        bot.send_message(message.chat.id, "ℹ️ Sizda hali tuzilgan testlar yo'q. Word fayl yuborib birinchi testingizni yarating!", reply_markup=get_main_keyboard())
         return
         
-    bot.send_message(message.chat.id, f"📚 **Siz yaratgan testlar ro'yxati ({len(my_quizzes)} ta):**")
+    bot.send_message(message.chat.id, f"📚 **Siz yaratgan testlar ro'yxati ({len(my_quizzes)} ta):**", reply_markup=get_main_keyboard())
     
     bot_username = bot.get_me().username
     for pid in my_quizzes:
@@ -127,14 +134,14 @@ def show_my_quizzes(message):
         )
 
 def send_quiz_question(chat_id, q_index):
-    """Savollarni navbatma-navbat yuborish va 'Tugatish' tugmasini qo'shish"""
+    """Savollarni Quiz rejimida navbatma-navbat yuborish"""
     session = active_sessions.get(chat_id)
     if not session or not session['is_active']:
         return
 
     pack = quizzes_db.get(session['pack_id'])
     if not pack or q_index >= len(pack['questions']):
-        bot.send_message(chat_id, "🎉 **Test yakunlandi!** Ishtirokingiz uchun rahmat.")
+        bot.send_message(chat_id, "🎉 **Test yakunlandi!** Ishtirokingiz uchun rahmat.", reply_markup=get_main_keyboard())
         active_sessions.pop(chat_id, None)
         return
 
@@ -176,7 +183,7 @@ def handle_stop_button(call):
             session['timer'].cancel()
         active_sessions.pop(chat_id, None)
         bot.answer_callback_query(call.id, "Test to'xtatildi!")
-        bot.send_message(chat_id, "🛑 **Test jarayoni foydalanuvchi tomonidan muddatidan oldin yakunlandi.**")
+        bot.send_message(chat_id, "🛑 **Test jarayoni foydalanuvchi tomonidan muddatidan oldin yakunlandi.**", reply_markup=get_main_keyboard())
     else:
         bot.answer_callback_query(call.id, "Bu test allaqachon yakunlangan.")
 
@@ -185,24 +192,24 @@ def handle_docs(message):
     user_id = message.from_user.id
     
     if not message.document.file_name.endswith('.docx'):
-        bot.reply_to(message, "❌ Iltimos, faqat Word (.docx) formatidagi fayl yuboring.")
+        bot.reply_to(message, "❌ Iltimos, faqat Word (.docx) formatidagi fayl yuboring.", reply_markup=get_main_keyboard())
         return
 
     try:
         file_info = bot.get_file(message.document.file_id)
         downloaded_file = bot.download_file(file_info.file_path)
         
-        # Faylni xotirada ushlab turamiz va foydalanuvchidan nom so'raymiz
+        # State (holat) o'rnatiladi
         user_states[user_id] = {
             'state': 'AWAITING_QUIZ_TITLE',
             'file_data': downloaded_file,
             'file_name': message.document.file_name
         }
         
-        bot.reply_to(message, "📥 Fayl qabul qilindi!\n\n✍️ **Endi ushbu test uchun nom (sarlavha) kiriting:**")
+        bot.reply_to(message, "📥 Fayl qabul qilindi!\n\n✍️ **Endi ushbu test uchun ixtiyoriy nom (sarlavha) kiriting:**", reply_markup=get_main_keyboard())
         
     except Exception as e:
-        bot.reply_to(message, f"❌ Faylni yuklashda xatolik: {str(e)}")
+        bot.reply_to(message, f"❌ Faylni yuklashda xatolik: {str(e)}", reply_markup=get_main_keyboard())
 
 @bot.message_handler(func=lambda message: user_states.get(message.from_user.id, {}).get('state') == 'AWAITING_QUIZ_TITLE')
 def handle_quiz_title(message):
@@ -211,34 +218,31 @@ def handle_quiz_title(message):
     quiz_title = message.text.strip()
     
     state_data = user_states.get(user_id)
+    if not state_data:
+        return
     
     try:
-        # Saqlangan faylni diskka yozamiz
         local_file_name = f"{user_id}_{state_data['file_name']}"
         with open(local_file_name, 'wb') as tmp_file:
             tmp_file.write(state_data['file_data'])
             
-        # Matnni o'qish va tahlil qilish
         raw_text = read_docx(local_file_name)
         quizzes = parse_quiz_text(raw_text)
-        os.remove(local_file_name) # Vaqtincha faylni o'chirish
+        os.remove(local_file_name)
         
         if not quizzes:
-            bot.send_message(chat_id, "❌ Fayl ichida to'g'ri formatdagi savollar topilmadi. Qaytdan urinib ko'ring.")
+            bot.send_message(chat_id, "❌ Fayl ichida to'g'ri formatdagi savollar topilmadi. Qaytdan fayl yuklab ko'ring.", reply_markup=get_main_keyboard())
             user_states.pop(user_id, None)
             return
             
-        # Unikal Paket ID yaratamiz
         pack_id = str(uuid.uuid4())[:8]
         
-        # Test paketini bazaga foydalanuvchi ID-si bilan saqlaymiz
         quizzes_db[pack_id] = {
             'title': quiz_title,
             'creator_id': user_id,
             'questions': quizzes
         }
         
-        # Tugmalarni generatsiya qilish
         bot_username = bot.get_me().username
         start_url = f"https://t.me/{bot_username}?start=start_quiz_{pack_id}"
         share_url = f"https://t.me/share/url?url=https://t.me/{bot_username}?start=start_quiz_{pack_id}&text=Ushbu testni yechib ko'ring! 🎯"
@@ -251,20 +255,18 @@ def handle_quiz_title(message):
         response_text = (
             f"🚀 **{quiz_title}**\n\n"
             f"Ushbu testni yechib ko'ring!\n"
-            f"📊 Savollar soni: {len(quizzes)}\n"
+            f"📊 Savollar soni: {len(quizzes)} ta\n"
             f"🔀 Aralashtirish: Ha ✅\n"
             f"⏱ Vaqt: 30 sec"
         )
         
-        bot.send_message(chat_id, response_text, reply_markup=markup, parse_mode="Markdown")
-        
-        # Foydalanuvchi holatini tozalaymiz
+        bot.send_message(chat_id, response_text, reply_markup=get_main_keyboard(), parse_mode="Markdown")
         user_states.pop(user_id, None)
         
     except Exception as e:
-        bot.send_message(chat_id, f"❌ Xatolik yuz berdi: {str(e)}")
+        bot.send_message(chat_id, f"❌ Xatolik yuz berdi: {str(e)}", reply_markup=get_main_keyboard())
         user_states.pop(user_id, None)
 
 if __name__ == "__main__":
-    print("Menyuli va Nomlash funksiyasiga ega bot ishga tushdi...")
+    print("Menyuli mukammal Quiz bot ishlamoqda...")
     bot.infinity_polling()
