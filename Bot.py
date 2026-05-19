@@ -2,11 +2,12 @@ import os
 import telebot
 from docx import Document
 from pypdf import PdfReader
-import re
+import tempfile
+import time
 
-# Tokenni Render serverining yashirin xotirasidan o'qiymiz
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 bot = telebot.TeleBot(BOT_TOKEN)
+
 
 def read_docx(file_path):
     doc = Document(file_path)
@@ -15,6 +16,7 @@ def read_docx(file_path):
         if para.text.strip():
             full_text.append(para.text.strip())
     return "\n".join(full_text)
+
 
 def read_pdf(file_path):
     reader = PdfReader(file_path)
@@ -25,65 +27,164 @@ def read_pdf(file_path):
             full_text.append(text)
     return "\n".join(full_text)
 
-def convert_to_quiz_format(raw_text):
-    text = re.sub(r'\|The following table:|==+|\+\+\+\+', '', raw_text)
-    blocks = re.split(r'\n(?=\d+[\.\)])', text.strip())
-    final_output = []
-    for block in blocks:
-        lines = [line.strip() for line in block.split('\n') if line.strip()]
-        if len(lines) < 2:
+
+def parse_questions(text):
+    """
+    Formatni tahlil qiladi:
+    ?Savol matni
+    +To'g'ri javob
+    =Noto'g'ri javob
+    =Noto'g'ri javob
+    """
+    questions = []
+    current_question = None
+    current_answers = []
+    correct_index = None
+
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
             continue
-        question = lines[0]
-        quiz_block = f"?{question}\n"
-        for line in lines[1:]:
-            cleaned_line = line.strip('"').strip("'")
-            if cleaned_line.startswith('#'):
-                actual_answer = cleaned_line.replace('#', '', 1).strip()
-                quiz_block += f"+{actual_answer}\n"
-            else:
-                quiz_block += f"={cleaned_line}\n"
-        final_output.append(quiz_block)
-    return "\n".join(final_output)
+
+        if line.startswith('?'):
+            # Oldingi savolni saqlash
+            if current_question and current_answers and correct_index is not None:
+                questions.append({
+                    'question': current_question,
+                    'answers': current_answers,
+                    'correct': correct_index
+                })
+            # Yangi savol boshlash
+            current_question = line[1:].strip()
+            current_answers = []
+            correct_index = None
+
+        elif line.startswith('+'):
+            answer = line[1:].strip()
+            correct_index = len(current_answers)
+            current_answers.append(answer)
+
+        elif line.startswith('='):
+            answer = line[1:].strip()
+            current_answers.append(answer)
+
+    # Oxirgi savolni qo'shish
+    if current_question and current_answers and correct_index is not None:
+        questions.append({
+            'question': current_question,
+            'answers': current_answers,
+            'correct': correct_index
+        })
+
+    return questions
+
+
+def send_quiz_polls(chat_id, questions):
+    """Har bir savolni Telegram quiz poll sifatida yuboradi"""
+    sent = 0
+    skipped = 0
+
+    for i, q in enumerate(questions):
+        question_text = q['question']
+        answers = q['answers']
+        correct_index = q['correct']
+
+        # Telegram cheklovi: savol max 300 belgi, javob max 100 belgi
+        if len(question_text) > 300:
+            question_text = question_text[:297] + "..."
+
+        answers = [a[:100] for a in answers]
+
+        # Telegram: 2-10 ta javob bo'lishi kerak
+        if len(answers) < 2 or len(answers) > 10:
+            skipped += 1
+            continue
+
+        if correct_index >= len(answers):
+            skipped += 1
+            continue
+
+        try:
+            bot.send_poll(
+                chat_id=chat_id,
+                question=question_text,
+                options=answers,
+                type='quiz',
+                correct_option_id=correct_index,
+                is_anonymous=False
+            )
+            sent += 1
+            # Telegram rate limit uchun kichik pauza
+            time.sleep(0.5)
+        except Exception as e:
+            print(f"Poll yuborishda xato (savol {i+1}): {e}")
+            skipped += 1
+
+    return sent, skipped
+
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
-    bot.reply_to(message, "Salom! Menga testlar bor bo'lgan Word (.docx) yoki PDF (.pdf) faylini yuboring. Men uni @QuizBot formatiga o'tkazib beraman!")
+    bot.reply_to(
+        message,
+        "Salom! Menga testlar bor .docx yoki .pdf faylini yuboring.\n"
+        "Men har bir savolni Telegram Quiz sifatida yuboraman!"
+    )
+
 
 @bot.message_handler(content_types=['document'])
 def handle_docs(message):
+    file_name = None
     try:
         file_info = bot.get_file(message.document.file_id)
         downloaded_file = bot.download_file(file_info.file_path)
-        file_name = message.document.file_name
-        file_ext = os.path.splitext(file_name)[1].lower()
+        original_name = message.document.file_name
+        file_ext = os.path.splitext(original_name)[1].lower()
 
-        with open(file_name, 'wb') as new_file:
-            new_file.write(downloaded_file)
-
-        bot.reply_to(message, "Fayl qabul qilindi, tahlil qilinmoqda...")
-
-        raw_text = ""
-        if file_ext == '.docx':
-            raw_text = read_docx(file_name)
-        elif file_ext == '.pdf':
-            raw_text = read_pdf(file_name)
-        else:
-            bot.reply_to(message, "Format xato! Faqat .docx yoki .pdf yuboring.")
-            os.remove(file_name)
+        if file_ext not in ['.docx', '.pdf']:
+            bot.reply_to(message, "❌ Format xato! Faqat .docx yoki .pdf yuboring.")
             return
 
-        formatted_quiz = convert_to_quiz_format(raw_text)
-        output_file_name = "tayyor_quiz_format.txt"
-        with open(output_file_name, "w", encoding="utf-8") as out_file:
-            out_file.write(formatted_quiz)
+        # Vaqtincha fayl yaratish
+        with tempfile.NamedTemporaryFile(suffix=file_ext, delete=False) as tmp:
+            tmp.write(downloaded_file)
+            file_name = tmp.name
 
-        with open(output_file_name, "rb") as out_file:
-            bot.send_document(message.chat.id, out_file, caption="Mana, @QuizBot uchun tayyor fayl!")
+        bot.reply_to(message, "📄 Fayl qabul qilindi, savollar tahlil qilinmoqda...")
 
-        os.remove(file_name)
-        os.remove(output_file_name)
+        # Matn o'qish
+        if file_ext == '.docx':
+            raw_text = read_docx(file_name)
+        else:
+            raw_text = read_pdf(file_name)
+
+        # Savollarni ajratib olish
+        questions = parse_questions(raw_text)
+
+        if not questions:
+            bot.reply_to(
+                message,
+                "⚠️ Savollar topilmadi. Fayl formati to'g'rimi?\n"
+                "Format: ? savol, + to'g'ri javob, = noto'g'ri javob"
+            )
+            return
+
+        bot.reply_to(message, f"✅ {len(questions)} ta savol topildi. Yuborilmoqda...")
+
+        # Quiz polllarni yuborish
+        sent, skipped = send_quiz_polls(message.chat.id, questions)
+
+        result_msg = f"🎉 Tayyor! {sent} ta quiz yuborildi."
+        if skipped > 0:
+            result_msg += f"\n⚠️ {skipped} ta savol o'tkazib yuborildi (format xato yoki limit)."
+        bot.send_message(message.chat.id, result_msg)
+
     except Exception as e:
-        bot.reply_to(message, f"Xatolik yuz berdi: {str(e)}")
+        bot.reply_to(message, f"❌ Xatolik yuz berdi: {str(e)}")
+    finally:
+        if file_name and os.path.exists(file_name):
+            os.remove(file_name)
+
 
 print("Bot ishlamoqda...")
 bot.infinity_polling()
